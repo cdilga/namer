@@ -6,7 +6,9 @@ file's metadata (poster, artists, etc.)
 """
 
 import argparse
+import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import pathlib
 import string
@@ -101,12 +103,28 @@ def dir_with_sub_dirs_to_process(dir_to_scan: Path, config: NamerConfig, infos: 
         logger.info('Scanning dir {} for sub-dirs/files to process', dir_to_scan)
         files = list(dir_to_scan.iterdir())
         files.sort()
+        commands = []
         for file in files:
             fullpath_file = dir_to_scan / file
             if fullpath_file.is_dir() or fullpath_file.suffix.lower()[1:] in config.target_extensions:
                 command = make_command(fullpath_file, config, nfo=infos, inplace=True)
                 if command is not None:
-                    process_file(command)
+                    commands.append(command)
+
+        num_workers = int(os.environ.get('NAMER_WORKERS', '0')) or os.cpu_count() or 4
+        if num_workers > 1 and len(commands) > 1:
+            logger.info('Processing {} files with {} workers', len(commands), num_workers)
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(process_file, cmd): cmd for cmd in commands}
+                for future in as_completed(futures):
+                    cmd = futures[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error('Error processing {}: {}', cmd.input_file, e)
+        else:
+            for command in commands:
+                process_file(command)
 
 
 def tag_in_place(video: Optional[Path], config: NamerConfig, new_metadata: LookedUpFileInfo, ffprobe_results: Optional[FFProbeResults]):
@@ -330,7 +348,48 @@ def check_arguments(file_to_process: Path, dir_to_process: Path, config_override
     return error
 
 
+def read_phash_from_sidecar(video_file: Path, config: NamerConfig) -> Optional[PerceptualHash]:
+    """
+    Opportunistically read phash from an existing sidecar if available.
+    Checks dest_dir, failed_dir, and watch_dir for _namer.json.gz files.
+    """
+    import gzip
+    import jsonpickle
+
+    search_dirs = [config.dest_dir, config.failed_dir, config.watch_dir]
+    seen_paths: set = set()
+
+    for search_dir in search_dirs:
+        if not search_dir:
+            continue
+        sidecar_path = search_dir / (video_file.stem + '_namer.json.gz')
+        if sidecar_path in seen_paths:
+            continue
+        seen_paths.add(sidecar_path)
+
+        if sidecar_path.exists():
+            try:
+                with gzip.open(sidecar_path, 'rt', encoding='utf-8') as f:
+                    raw = f.read()
+                comparison_results = jsonpickle.decode(raw)
+                if not comparison_results or not comparison_results.results:
+                    continue
+                best = comparison_results.results[0]
+                for scene_hash in (best.looked_up.hashes or []):
+                    if scene_hash.type == HashType.PHASH and scene_hash.hash and scene_hash.duration:
+                        logger.info('Reusing phash from sidecar: {}', sidecar_path)
+                        return return_perceptual_hash(scene_hash.duration, scene_hash.hash, '')
+            except Exception:
+                continue
+    return None
+
+
 def calculate_phash(file: Path, config: NamerConfig) -> Optional[PerceptualHash]:
+    # Opportunistically reuse phash from existing sidecar
+    sidecar_phash = read_phash_from_sidecar(file, config)
+    if sidecar_phash:
+        return sidecar_phash
+
     if config.use_database:
         search_result = search_file_in_database(file)
         if search_result:

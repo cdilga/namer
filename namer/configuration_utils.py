@@ -81,12 +81,6 @@ def __verify_dir(config: NamerConfig, name: str, other_dirs: List[str]) -> bool:
 
         return False
 
-    min_size = config.min_file_size if config.min_file_size else 1
-    if dir_name and name == 'work_dir' and sum(file.stat().st_size for file in config.work_dir.rglob('*')) / 1024 / 1024 > min_size:
-        logger.error(f'Configured directory {name}: "{dir_name}" should be empty')
-
-        return False
-
     if dir_name and not os.access(dir_name, os.W_OK):
         logger.warning(f'Configured directory {name}: "{dir_name}" might have write permission problem')
 
@@ -416,4 +410,18 @@ def default_config(user_set: Optional[Path] = None) -> NamerConfig:
             user_config.read(file, encoding='UTF-8')
             break
 
-    return from_config(user_config, namer_config)
+    config = from_config(user_config, namer_config)
+
+    # Environment variable overrides — useful in Docker/TrueNAS deployments where
+    # editing namer.cfg isn't convenient.
+    use_gpu_env = os.environ.get('NAMER_USE_GPU', '').lower()
+    if use_gpu_env in ('1', 'true', 'yes'):
+        config.use_gpu = True
+    elif use_gpu_env in ('0', 'false', 'no'):
+        config.use_gpu = False
+
+    max_workers_env = os.environ.get('NAMER_MAX_FFMPEG_WORKERS', '0')
+    if max_workers_env.isdigit() and int(max_workers_env) > 0:
+        config.max_ffmpeg_workers = int(max_workers_env)
+
+    return config

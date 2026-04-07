@@ -1,0 +1,105 @@
+FROM ubuntu:noble AS base
+
+ENV PATH="/root/.local/bin:$PATH"
+ENV TZ=UTC
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       python3-pip \
+       python3 \
+       pipx \
+       tzdata \
+       curl \
+       gnupg \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -Rf /usr/share/doc /usr/share/man \
+    && apt-get clean
+
+# ── runtime stage (separate from build) ────────────────────────────────────────
+FROM base AS runtime
+
+# Install jellyfin-ffmpeg FIRST (stable, rarely changes) - maximizes cache reuse
+RUN curl -fsSL https://repo.jellyfin.org/ubuntu/jellyfin_team.gpg.key \
+      | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/jellyfin.gpg arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
+      > /etc/apt/sources.list.d/jellyfin.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends jellyfin-ffmpeg7 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# ── build stage ───────────────────────────────────────────────────────────────
+FROM base AS build
+
+# Install build dependencies (stable, cached)
+RUN apt-get update \
+    && apt-get install -y --no-intercommends \
+       build-essential \
+       libffi-dev \
+       libssl-dev \
+       python3-dev \
+       python3-venv \
+       golang \
+       git \
+       make \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install Node.js and pnpm (stable, cached)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g pnpm@latest \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry (stable, cached)
+RUN pipx install poetry \
+    && pipx inject poetry poethepoet
+
+WORKDIR /work
+
+# Copy ONLY dependency files first (maximizes cache hit for poetry install)
+COPY pyproject.toml poetry.lock /work/
+
+# Install Python dependencies (cached unless pyproject.toml/poetry.lock changes)
+RUN poetry install --no-interaction --no-root
+
+# Copy source code LAST (invalidates cache only for build steps)
+COPY . /work
+
+# Build frontend JS assets + videohashes Go binary
+RUN for i in 1 2 3; do \
+        poetry run poe build_deps && break || \
+        (echo "=== poe build_deps failed, retry $i/3 ===" && sleep 10); \
+    done
+
+# Build Python package
+RUN poetry build --no-interaction
+
+# ── final runtime stage ───────────────────────────────────────────────────────
+FROM runtime
+
+# Copy built package from build stage
+COPY --from=build /work/dist/namer-*.tar.gz /
+
+# Install namer (this layer changes with each build)
+RUN pipx install /namer-*.tar.gz \
+    && rm /namer-*.tar.gz
+
+ARG BUILD_DATE
+ARG GIT_HASH
+
+ENV PYTHONUNBUFFERED=1
+ENV NAMER_CONFIG=/config/namer.cfg
+ENV NAMER_WORKERS=0
+ENV NAMER_MAX_FFMPEG_WORKERS=0
+ENV NAMER_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
+ENV NAMER_USE_GPU=0
+ENV NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+
+LABEL build_date=$BUILD_DATE
+LABEL git_hash=$GIT_HASH
+
+EXPOSE 8080
+HEALTHCHECK --interval=1m --timeout=30s CMD curl -sf http://localhost:8080/api/healthcheck >/dev/null || exit 1
+ENTRYPOINT ["namer", "watchdog"]

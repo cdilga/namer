@@ -20,9 +20,9 @@ window.jQuery = $
 
 const filesResult = $('#filesResult')
 const tableButtons = $('#tableButtons')
-const resultForm = $('#searchResults .modal-body')
+const resultForm = $('#searchResultsBody')
 const resultFormTitle = $('#modalSearchResultsLabel span')
-const logForm = $('#logFile .modal-body')
+const logForm = $('#logBody')
 const logFormTitle = $('#modalLogsLabel span')
 const searchForm = $('#searchForm')
 const searchButton = $('#searchForm .modal-footer .search')
@@ -33,6 +33,32 @@ const deleteFile = $('#deleteFile')
 const queueSize = $('#queueSize')
 const refreshFiles = $('#refreshFiles')
 const deleteButton = $('#deleteButton')
+
+const previewPlayer = $('#previewPlayer')
+const previewVideo = document.getElementById('previewVideo')
+const logPreviewPlayer = $('#logPreviewPlayer')
+const logPreviewVideo = document.getElementById('logPreviewVideo')
+
+function loadPreviewVideo (file, videoEl, playerEl) {
+  if (!file) return
+  const src = `./api/v1/video/${file}`
+  videoEl.pause()
+  videoEl.src = src
+  videoEl.load()
+  playerEl.removeClass('d-none')
+}
+
+$('#searchResults').on('hidden.bs.modal', function () {
+  previewVideo.pause()
+  previewVideo.src = ''
+  previewPlayer.addClass('d-none')
+})
+
+$('#logFile').on('hidden.bs.modal', function () {
+  logPreviewVideo.pause()
+  logPreviewVideo.src = ''
+  logPreviewPlayer.addClass('d-none')
+})
 
 let modalButton
 
@@ -48,6 +74,8 @@ searchButton.on('click', function () {
   const title = escape(`(${data.file}) [${data.query}]`)
   resultFormTitle.html(title)
   resultFormTitle.attr('title', title)
+
+  loadPreviewVideo(data.file, previewVideo, previewPlayer)
 
   Helpers.request('./api/v1/get_search', data, function (data) {
     Helpers.render('searchResults', data, resultForm, function (selector) {
@@ -67,6 +95,8 @@ phashButton.on('click', function () {
   const title = escape(`(${data.file})`)
   resultFormTitle.html(title)
   resultFormTitle.attr('title', title)
+
+  loadPreviewVideo(data.file, previewVideo, previewPlayer)
 
   Helpers.request('./api/v1/get_phash', data, function (data) {
     Helpers.render('searchResults', data, resultForm, function (selector) {
@@ -100,6 +130,8 @@ filesResult.on('click', '.log', function () {
 
   logFormTitle.html(title)
   logFormTitle.attr('title', title)
+
+  loadPreviewVideo(data.file, logPreviewVideo, logPreviewPlayer)
 
   Helpers.request('./api/v1/read_failed_log', data, function (data) {
     Helpers.render('logFile', data, logForm, function (selector) {

@@ -13,7 +13,7 @@ from pathlib import Path
 from platform import system
 from queue import Queue
 from threading import Thread
-from typing import Optional
+from typing import List, Optional
 
 import schedule
 from loguru import logger
@@ -149,6 +149,13 @@ class MovieEventHandler(PatternMatchingEventHandler):
 
     @logger.catch
     def prepare_file_for_processing(self, path: Path):
+        # Skip files that already have a namer sidecar in the watch dir —
+        # they were likely already processed by a batch rename run.
+        sidecar = path.with_name(path.stem + '_namer.json.gz')
+        if sidecar.exists():
+            logger.info('Skipping {} — sidecar already exists in watch_dir', path)
+            return
+
         command = make_command_relative_to(input_dir=path, relative_to=self.__namer_config.watch_dir, config=self.__namer_config)
         working_command = move_command_files(command, self.__namer_config.work_dir)
         if working_command is not None:
@@ -181,12 +188,12 @@ class MovieWatcher:
                 self.__command_queue.task_done()
                 break
 
-            handle(command)
-            self.__command_queue.task_done()
-
-        # Throw away any items after the None item is processed.
-        with self.__command_queue.mutex:
-            self.__command_queue.queue.clear()
+            try:
+                handle(command)
+            except Exception as e:
+                logger.error('Unhandled exception processing {}: {}', getattr(command, 'input_file', command), e)
+            finally:
+                self.__command_queue.task_done()
 
         logger.info('exit processing_thread')
 
@@ -198,7 +205,8 @@ class MovieWatcher:
         self.__event_observer = PollingObserver()
         self.__webserver: Optional[NamerWebServer] = None
         self.__command_queue: Queue = Queue(maxsize=self.__namer_config.queue_limit)
-        self.__worker_thread: Thread = Thread(target=self.__processing_thread, daemon=True)
+        num_workers = int(os.environ.get('NAMER_WORKERS', '0')) or os.cpu_count() or 4
+        self.__worker_threads: List[Thread] = [Thread(target=self.__processing_thread, daemon=True) for _ in range(num_workers)]
         self.__event_handler = MovieEventHandler(namer_config, self.enqueue_work, self.__command_queue)
         self.__background_thread: Optional[Thread] = None
 
@@ -211,10 +219,13 @@ class MovieWatcher:
         needed if running in docker as events aren't properly passed in.
         """
         if not self.__started:
-            self.start()
+            # Start web server immediately so the UI is available while the initial
+            # directory scan runs in the background.
             if self.__namer_config.web:
                 self.__webserver = NamerWebServer(self.__namer_config, self.__command_queue)
                 self.__webserver.start()
+
+            self.start()
 
             try:
                 while not self.__stopped:
@@ -273,15 +284,46 @@ class MovieWatcher:
 
         self.__schedule()
         self.__event_observer.start()
-        self.__worker_thread.start()
+        for t in self.__worker_threads:
+            t.start()
 
-        # touch all existing movie files.
+        # Scan the watch directory in a background thread so startup (and the web UI)
+        # is not blocked while waiting for done_copying() on large/many existing files.
+        Thread(target=self.__initial_scan, daemon=True, name='initial-scan').start()
+
+    def __initial_scan(self):
+        """Enqueue any files already present in watch_dir at startup."""
+        # Recover any files left in work_dir from a previous crash — runs here so startup
+        # (and the web UI) are not blocked while potentially large cross-volume copies complete.
+        config = self.__namer_config
+        if config.work_dir and config.work_dir.is_dir():
+            items = [i for i in config.work_dir.iterdir()]
+            if items:
+                logger.warning('work_dir non-empty on startup (likely a crash). Recovering {} items to watch_dir.', len(items))
+                for idx, item in enumerate(items, 1):
+                    dest = config.watch_dir / item.name
+                    logger.info('Recovery {}/{}: {}', idx, len(items), item.name)
+                    shutil.move(str(item), str(dest))
+                logger.info('work_dir recovery complete.')
+
         with suppress(FileNotFoundError):
+            # Process top-level directories first (e.g. SiteRip folders dropped into watch_dir).
+            for item in self.__namer_config.watch_dir.iterdir():
+                if item.is_dir():
+                    relative_path = str(item.relative_to(self.__namer_config.watch_dir))
+                    if not self.__namer_config.ignored_dir_regex.search(relative_path):
+                        self.__event_handler.prepare_file_for_processing(item)
+
+            # Then handle individual video files.
             for file in self.__namer_config.watch_dir.rglob('**/*.*'):
                 file = file.resolve()
                 if not file.is_relative_to(self.__namer_config.watch_dir):
                     logger.error('file should be in watch dir {}', file)
                     return
+
+                # Skip files inside a subdirectory — already covered by the dir pass above.
+                if file.parent != self.__namer_config.watch_dir:
+                    continue
 
                 relative_path = str(file.relative_to(self.__namer_config.watch_dir))
                 if not self.__namer_config.ignored_dir_regex.search(relative_path) and is_interesting_movie(file, self.__namer_config) and done_copying(file):
@@ -306,10 +348,12 @@ class MovieWatcher:
                 logger.info('Webserver stop')
                 self.__webserver.stop()
 
-            self.__command_queue.put(None)
+            for _ in self.__worker_threads:
+                self.__command_queue.put(None)
 
             # let the thread processing work items complete.
-            self.__worker_thread.join()
+            for t in self.__worker_threads:
+                t.join()
             logger.debug('Command queue None')
 
             test = os.environ.get('PYTEST_CURRENT_TEST', '')

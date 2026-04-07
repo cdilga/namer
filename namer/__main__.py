@@ -65,7 +65,14 @@ def main():
     if config.use_requests_cache:
         cache_file = config.database_path / 'namer_cache'
         expire_time = timedelta(minutes=config.requests_cache_expire_minutes)
-        config.cache_session = CachedSession(str(cache_file), backend='sqlite', expire_after=expire_time, ignored_parameters=['Authorization'])
+        config.cache_session = CachedSession(
+            str(cache_file),
+            backend='sqlite',
+            expire_after=expire_time,
+            ignored_parameters=['Authorization'],
+            connection_kwargs={'check_same_thread': False, 'timeout': 30},
+            pragmas={'journal_mode': 'WAL', 'synchronous': 'NORMAL'},
+        )
 
     if config.use_database:
         db_file = config.database_path / 'namer_database.sqlite'

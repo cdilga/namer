@@ -6,6 +6,7 @@ code if there are more than one audio streams and if they are correctly labeled.
 See:  https://iso639-3.sil.org/code_tables/639/data/ for language codes.
 """
 
+import os
 import subprocess
 from contextlib import suppress
 from dataclasses import dataclass
@@ -126,6 +127,20 @@ class FFMpeg:
     __ffprobe_cmd: str = 'ffprobe'
 
     def __init__(self):
+        # Allow a pre-built ffmpeg (e.g. jellyfin-ffmpeg with NVDEC/NVENC support) to be
+        # selected via NAMER_FFMPEG environment variable.
+        env_ffmpeg = os.environ.get('NAMER_FFMPEG')
+        if env_ffmpeg:
+            env_path = Path(env_ffmpeg)
+            if env_path.is_file():
+                self.__ffmpeg_cmd = str(env_path)
+                env_ffprobe = env_path.parent / 'ffprobe'
+                if env_ffprobe.is_file():
+                    self.__ffprobe_cmd = str(env_ffprobe)
+                logger.info('Using ffmpeg from NAMER_FFMPEG: {}', self.__ffmpeg_cmd)
+                return
+            logger.warning('NAMER_FFMPEG={} not found, falling back to auto-detect', env_ffmpeg)
+
         versions = self.__ffmpeg_version()
         if not versions['ffmpeg'] or not versions['ffprobe']:
             home_path: Path = Path(__file__).parent
@@ -299,25 +314,62 @@ class FFMpeg:
         return success
 
     def extract_screenshot(self, file: Path, screenshot_time: float, screenshot_width: int = -1, use_gpu: bool = False) -> Image.Image:
-        input_args = {}
+        input_args: dict = {}
         if use_gpu:
-            input_args['hwaccel'] = 'auto'
+            # cuda hwaccel decodes on GPU; hwaccel_output_format=nv12 keeps frames in
+            # system-accessible memory so ffmpeg can pipe the PNG without an extra
+            # hwdownload step.  Falls back to software automatically on unsupported codecs.
+            input_args['hwaccel'] = 'cuda'
+            input_args['hwaccel_output_format'] = 'nv12'
 
         # fmt: off
-        out, _ = (
-            ffmpeg
-            .input(file, ss=screenshot_time, **input_args)
-            .filter('scale', screenshot_width, -2)
-            .output('pipe:', vframes=1, format='apng')
-            .run(quiet=True, capture_stdout=True, cmd=self.__ffmpeg_cmd)
-        )
+        try:
+            out, _ = (
+                ffmpeg
+                .input(file, ss=screenshot_time, **input_args)
+                .filter('scale', screenshot_width, -2)
+                .output('pipe:', vframes=1, format='apng')
+                .run(quiet=True, capture_stdout=True, cmd=self.__ffmpeg_cmd)
+            )
+        except Exception:
+            if use_gpu:
+                # CUDA unavailable for this file/codec — retry in software
+                out, _ = (
+                    ffmpeg
+                    .input(file, ss=screenshot_time)
+                    .filter('scale', screenshot_width, -2)
+                    .output('pipe:', vframes=1, format='apng')
+                    .run(quiet=True, capture_stdout=True, cmd=self.__ffmpeg_cmd)
+                )
+            else:
+                raise
         out = BytesIO(out)
         image = Image.open(out)
 
         return image
 
     def ffmpeg_version(self) -> Dict:
-        return self.__ffmpeg_version(self.__local_dir)
+        # Use the configured ffmpeg/ffprobe commands, not just 'ffmpeg'/'ffprobe' from PATH
+        versions = {}
+        re_tools = 'ffmpeg|ffprobe'
+        reg = re.compile(rf'({re_tools}) version (?P<version>.*) Copyright')
+        
+        for tool_cmd in [self.__ffmpeg_cmd, self.__ffprobe_cmd]:
+            tool_name = Path(tool_cmd).name
+            process = None
+            with suppress(Exception):
+                process = subprocess.Popen([tool_cmd, '-version'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
+            
+            matches = None
+            if process:
+                stdout, _ = process.communicate()
+                if stdout:
+                    line = stdout.split('\n', 1)[0]
+                    matches = reg.search(line)
+            
+            versions[tool_name] = matches.groupdict().get('version') if matches else None
+        
+        return versions
 
     @staticmethod
     def __ffmpeg_version(local_dir: Optional[Path] = None) -> Dict:

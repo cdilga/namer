@@ -5,7 +5,7 @@ Defines the api routes of a Flask webserver for namer.
 from pathlib import Path
 from queue import Queue
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request, send_file, abort
 from flask.wrappers import Response
 
 from namer.command import make_command_relative_to, move_command_files
@@ -119,6 +119,17 @@ def get_routes(config: NamerConfig, command_queue: Queue) -> Blueprint:
             }
 
         return jsonify(res)
+
+    @blueprint.route('/v1/video/<path:file_path>', methods=['GET'])
+    def serve_video(file_path: str) -> Response:
+        full_path = (config.failed_dir / file_path).resolve()
+        try:
+            full_path.relative_to(config.failed_dir.resolve())
+        except ValueError:
+            abort(403)
+        if not full_path.is_file():
+            abort(404)
+        return send_file(full_path, conditional=True)
 
     @blueprint.route('/healthcheck', methods=['GET'])
     def healthcheck() -> Response:

@@ -279,6 +279,9 @@ def move_to_final_location(command: Command, new_metadata: LookedUpFileInfo) -> 
             if file != command.target_movie_file:
                 dest_file = containing_dir / file.name
                 dest_file.parent.mkdir(parents=True, exist_ok=True)
+                if dest_file.exists():
+                    logger.warning('Skipping move of {} — destination already exists: {}', file.name, dest_file)
+                    continue
                 shutil.move(file, dest_file)
 
     if command.target_directory and containing_dir:

@@ -70,7 +70,7 @@ inplace_name_jav=
 prefer_dir_name_if_available = True
 
 # minimum file size to process in MB, ignored if a file is to be processed
-min_file_size = 300
+min_file_size = 100
 
 # Should namer's comparison log be written next to successfully moved videos.
 write_namer_log = False

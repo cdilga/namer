@@ -26,8 +26,15 @@
                         <h5 id="modalLogsLabel" class="modal-title text-truncate">Failed Log <span></span></h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
-                    <div class="modal-body">
-                        <div class="progress"></div>
+                    <div class="modal-body p-0">
+                        <div id="logPreviewPlayer" class="d-none p-3 border-bottom bg-black">
+                            <video id="logPreviewVideo" controls preload="metadata" class="w-100 rounded" style="max-height:220px;background:#000">
+                                Your browser does not support video playback.
+                            </video>
+                        </div>
+                        <div id="logBody" class="p-3">
+                            <div class="progress"></div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -77,8 +84,15 @@
                     <h5 id="modalSearchResultsLabel" class="modal-title text-truncate">Search Result <span></span></h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-body">
-                    <div class="progress"></div>
+                <div class="modal-body p-0">
+                    <div id="previewPlayer" class="d-none p-3 border-bottom bg-black">
+                        <video id="previewVideo" controls preload="metadata" class="w-100 rounded" style="max-height:220px;background:#000">
+                            Your browser does not support video playback.
+                        </video>
+                    </div>
+                    <div id="searchResultsBody" class="p-3">
+                        <div class="progress"></div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-target="#searchForm" data-bs-toggle="modal" data-bs-dismiss="modal">Back</button>
