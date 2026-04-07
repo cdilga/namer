@@ -39,6 +39,9 @@ const previewVideo = document.getElementById('previewVideo')
 const logPreviewPlayer = $('#logPreviewPlayer')
 const logPreviewVideo = document.getElementById('logPreviewVideo')
 
+let lastPhashFile = null
+let lastPhashType = 'Any'
+
 function loadPreviewVideo (file, videoEl, playerEl) {
   if (!file) return
   const src = `./api/v1/video/${file}`
@@ -92,6 +95,9 @@ phashButton.on('click', function () {
     type: queryType.val()
   }
 
+  lastPhashFile = data.file
+  lastPhashType = data.type
+
   const title = escape(`(${data.file})`)
   resultFormTitle.html(title)
   resultFormTitle.attr('title', title)
@@ -99,6 +105,25 @@ phashButton.on('click', function () {
   loadPreviewVideo(data.file, previewVideo, previewPlayer)
 
   Helpers.request('./api/v1/get_phash', data, function (data) {
+    Helpers.render('searchResults', data, resultForm, function (selector) {
+      Helpers.initTooltips(selector)
+    })
+  })
+})
+
+resultForm.on('click', '.fuzzy-phash', function () {
+  resultForm.html(Helpers.getProgressBar())
+
+  const data = {
+    file: $(this).data('file') || lastPhashFile,
+    type: lastPhashType
+  }
+
+  const title = escape(`(${data.file}) [wider match]`)
+  resultFormTitle.html(title)
+  resultFormTitle.attr('title', title)
+
+  Helpers.request('./api/v1/get_phash_fuzzy', data, function (data) {
     Helpers.render('searchResults', data, resultForm, function (selector) {
       Helpers.initTooltips(selector)
     })

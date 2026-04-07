@@ -158,6 +158,7 @@ def get_search_results(query: str, search_type: SearchType, file: str, config: N
     res = {
         'file': file,
         'files': files,
+        'source': 'search',
     }
 
     return res
@@ -192,9 +193,76 @@ def get_phash_results(file: str, search_type: SearchType, config: NamerConfig) -
     res = {
         'file': file,
         'files': files,
+        'source': 'phash',
     }
 
     return res
+
+
+def get_fuzzy_phash_results(file: str, search_type: SearchType, config: NamerConfig) -> Dict:
+    """
+    Wider candidate search for cut, re-encoded, or differently released versions.
+
+    Instead of asking TPDB to match by phash (which uses TPDB's own distance threshold),
+    this queries TPDB by site and/or date parsed from the filename to gather a broad set
+    of candidates, then ranks them locally by phash Hamming distance with no upper cutoff.
+    Results with no stored phash are appended at the end for manual visual review.
+    """
+    phash_file = config.failed_dir / file
+    if not phash_file.is_file():
+        return {}
+
+    phash = calculate_phash(phash_file, config)
+
+    # Parse filename for site/date hints
+    ext = config.target_extensions[0] if config.target_extensions else 'mp4'
+    file_info = parse_file_name(Path(file).stem + '.' + ext, config)
+
+    scene_types: List[SceneType] = []
+    if search_type == SearchType.ANY or search_type == SearchType.SCENES:
+        scene_types.append(SceneType.SCENE)
+    if search_type == SearchType.ANY or search_type == SearchType.MOVIES:
+        scene_types.append(SceneType.MOVIE)
+    if search_type == SearchType.ANY or search_type == SearchType.JAV:
+        scene_types.append(SceneType.JAV)
+
+    responses = {}
+    for scene_type in scene_types:
+        # Site + date (most specific — scenes from this studio on this date)
+        if file_info.site and file_info.date:
+            url = __build_url(config, site=file_info.site, release_date=file_info.date, scene_type=scene_type)
+            if url and url not in responses:
+                responses[url] = __request_response_json_object(url, config)
+
+        # Site only (most recent 25 scenes from this studio)
+        if file_info.site:
+            url = __build_url(config, site=file_info.site, scene_type=scene_type)
+            if url and url not in responses:
+                responses[url] = __request_response_json_object(url, config)
+
+        # Date only (all studios, that date — fallback when site doesn't parse)
+        if file_info.date and not file_info.site:
+            url = __build_url(config, release_date=file_info.date, scene_type=scene_type)
+            if url and url not in responses:
+                responses[url] = __request_response_json_object(url, config)
+
+    if not responses:
+        return {'file': file, 'files': [], 'fuzzy': True}
+
+    files = metadataapi_responses_to_webui_response(responses, config, file, phash)
+
+    # Sort: known-distance results ascending, then no-phash results (manual review only)
+    with_distance = sorted(
+        [f for f in files if f.get('phash_distance') is not None],
+        key=lambda f: f['phash_distance'],
+    )
+    without_distance = [f for f in files if f.get('phash_distance') is None]
+
+    return {
+        'file': file,
+        'files': (with_distance + without_distance)[:50],
+        'fuzzy': True,
+    }
 
 
 def delete_file(file_name_str: str, config: NamerConfig) -> bool:

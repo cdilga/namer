@@ -10,7 +10,7 @@ from flask.wrappers import Response
 
 from namer.command import make_command_relative_to, move_command_files
 from namer.configuration import NamerConfig
-from namer.web.actions import delete_file, get_failed_files, get_phash_results, get_queue_size, get_queued_files, get_search_results, human_format, read_failed_log_file
+from namer.web.actions import delete_file, get_failed_files, get_fuzzy_phash_results, get_phash_results, get_queue_size, get_queued_files, get_search_results, human_format, read_failed_log_file
 
 
 def get_routes(config: NamerConfig, command_queue: Queue) -> Blueprint:
@@ -70,6 +70,16 @@ def get_routes(config: NamerConfig, command_queue: Queue) -> Blueprint:
         res = False
         if data:
             res = get_phash_results(data['file'], data['type'], config)
+
+        return jsonify(res)
+
+    @blueprint.route('/v1/get_phash_fuzzy', methods=['POST'])
+    def get_phash_fuzzy() -> Response:
+        data = request.json
+
+        res = False
+        if data:
+            res = get_fuzzy_phash_results(data['file'], data['type'], config)
 
         return jsonify(res)
 
